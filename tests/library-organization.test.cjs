@@ -17,8 +17,12 @@ function setup() {
     context.buildLibraryView = () => context.view;
     context.displayCategoryMatches = (category, cat) => cat === '__all__' || (cat === '__uncategorized__' ? !category : category === cat);
     context.itemMatchesSearch = (_, item, query) => item.name.includes(query);
-    vm.runInContext(extract('buildSeriesLayoutUnits') + extract('sortItems') + extract('finishGridRender'), context);
-    context.view = { seriesGroups: {}, seriesMembership: {}, metaByKey: {}, sortedByMode: {} };
+    vm.runInContext(extract('buildSeriesLayoutUnits') + extract('sortItems') + extract('finishGridRender') + extract('applyAutomaticCategories'), context);
+    context.view = { items: [], itemByKey: {}, seriesGroups: {}, seriesMembership: {}, metaByKey: {}, sortedByMode: {} };
+    context.getAmbiguousThemeNames = () => [];
+    context.getItemMetaForWrite = (data, item) => data.themeMeta[item.themeName];
+    context.seriesApi = { setSeriesCategory(data, id, category) { data.series.groups[id].category = category; return true; } };
+    context.invalidateLibraryView = () => {};
     context.api = context.window.ThemeMgrModules.libraryOrganization;
     return context;
 }
@@ -27,45 +31,113 @@ function item(name, kind = 'theme') {
 }
 const plain = value => JSON.parse(JSON.stringify(value));
 
-test('series suffixes, explicit separators and exact authors; no arbitrary prefix grouping', () => {
+test('series and author rules produce real category assignments; unmatched themes stay uncategorized', () => {
     const c = setup();
     const items = ['春日 v1.0', '春日 v2.0', '月光 · 蓝', '月光 · 红', '独立甲', '独立乙', '海边', '海风'].map(n => item(n));
     const meta = { 'theme:独立甲': { author: ' Alice ' }, 'theme:独立乙': { author: 'ＡＬＩＣＥ' } };
-    const groups = c.api.groupItems(items, meta, 'smart');
-    assert.deepEqual(plain(groups.map(g => g.items.map(i => i.name))), [items.slice(0, 2), items.slice(2, 4), items.slice(4, 6)].map(list => list.map(i => i.name)));
+    const plan = c.api.planCategories(items, meta, 'smart', {}, {});
+    assert.deepEqual(plain(plan.map(entry => entry.category)), ['系列 · 春日', '系列 · 春日', '系列 · 月光', '系列 · 月光', '作者 · Alice', '作者 · Alice']);
     assert.equal(c.api.seriesName(item('晨曦【夜间版】'), {}), '晨曦');
     assert.equal(c.api.seriesName(item('月光-蓝'), {}), '月光');
-    assert.equal(c.api.groupItems(items, meta, 'none').length, 0);
-    assert.equal(c.api.groupItems(items, meta, 'author').length, 1);
-    assert.equal(c.api.groupItems(items, meta, 'series').length, 2);
+    assert.equal(c.api.planCategories(items, meta, 'none', {}, {}).length, 0);
+    assert.equal(c.api.planCategories(items, meta, 'author', {}, {}).length, 2);
+    assert.equal(c.api.planCategories(items, meta, 'series', {}, {}).length, 4);
 });
 
-test('category boundaries, blank authors, singleton and prototype-like names are safe', () => {
+test('existing categories are preserved; blank authors, singletons and prototype-like names are safe', () => {
     const c = setup();
     const items = ['a', 'b', 'c', 'd', 'e'].map(n => item(n));
     const meta = Object.create(null);
     items.forEach((i, index) => { meta[i.key] = { author: index < 3 ? '__proto__' : '', category: index === 2 ? 'other' : '' }; });
     const before = JSON.stringify(meta);
-    const groups = c.api.groupItems(items, meta, 'smart');
-    assert.deepEqual(plain(groups[0].items.map(i => i.name)), ['a', 'b']);
-    assert.equal(groups.length, 1);
+    const plan = c.api.planCategories(items, meta, 'smart', {}, {});
+    assert.deepEqual(plain(plan.map(entry => entry.key)), ['theme:a', 'theme:b']);
+    assert.equal(plan[0].category, '作者 · __proto__');
     assert.equal(JSON.stringify(meta), before);
 });
 
-test('manual series wins; auto grouping retains sorting, search and category filtering without mutating relations', () => {
+test('manual series retains its category and free themes remain individual cards', () => {
     const c = setup(), items = ['a', 'b', 'c', 'd'].map(n => item(n));
     c.view.seriesGroups.manual = { id: 'manual', name: '手工系列', category: '手工', members: ['theme:a', 'theme:b'] };
     c.view.seriesMembership = { 'theme:a': 'manual', 'theme:b': 'manual' };
     items.forEach(i => { c.view.metaByKey[i.key] = { author: '同作者' }; });
     const before = JSON.stringify(c.view);
-    const layout = c.buildSeriesLayoutUnits({ autoGroupMode: 'smart' }, items, '__all__', '', c.view);
-    assert.equal(layout.units.length, 2);
+    const layout = c.buildSeriesLayoutUnits({}, items, '__all__', '', c.view);
+    assert.equal(layout.units.length, 3);
     assert.equal(layout.units[0].group.id, 'manual');
-    assert.deepEqual(plain(layout.units[1].items.map(i => i.name)), ['c', 'd']);
+    assert.equal(layout.units[1].item.name, 'c');
     assert.equal(JSON.stringify(c.view), before);
     assert.equal(c.buildSeriesLayoutUnits({}, items, '手工', '', c.view).displayedItems.length, 2);
-    assert.equal(c.buildSeriesLayoutUnits({}, items, '__all__', '同作者', c.view).units.length, 1);
-    assert.equal(c.buildSeriesLayoutUnits({ autoGroupMode: 'none' }, items, '__all__', '', c.view).units.length, 3);
+    const plan = c.api.planCategories(items, c.view.metaByKey, 'smart', c.view.seriesGroups, c.view.seriesMembership);
+    assert.deepEqual(plain(plan.map(entry => entry.key)), ['theme:c', 'theme:d']);
+});
+
+test('apply persists category tabs and metadata, reuses labels and is idempotent after reload/import', () => {
+    const c = setup(), items = [item('a'), item('b'), item('c', 'pair')];
+    const data = { autoCategoryMode: 'smart', categories: ['手动分类'], themeMeta: { a: { author: '作者甲' }, b: { author: '作者甲' }, c: { category: '手动分类', author: '作者甲' } } };
+    c.view.items = items;
+    items.forEach(i => { c.view.itemByKey[i.key] = i; c.view.metaByKey[i.key] = data.themeMeta[i.themeName]; });
+    assert.equal(c.applyAutomaticCategories(data), 2);
+    assert.deepEqual(data.categories, ['手动分类', '作者 · 作者甲']);
+    const restored = JSON.parse(JSON.stringify(data));
+    assert.equal(restored.themeMeta.a.category, '作者 · 作者甲');
+    assert.equal(restored.themeMeta.b.category, '作者 · 作者甲');
+    assert.equal(restored.themeMeta.c.category, '手动分类');
+    assert.equal(c.applyAutomaticCategories(data), 0);
+    const imported = item('d'); data.themeMeta.d = { author: '作者甲' };
+    c.view.items.push(imported); c.view.itemByKey[imported.key] = imported; c.view.metaByKey[imported.key] = data.themeMeta.d;
+    assert.equal(c.applyAutomaticCategories(data), 1);
+    assert.equal(data.themeMeta.d.category, '作者 · 作者甲');
+    assert.equal(data.categories.length, 2);
+});
+
+test('uncategorized manual series gets a real series category; author-only honors matching members', () => {
+    const c = setup(), items = [item('a'), item('b')];
+    const data = { autoCategoryMode: 'smart', categories: [], themeMeta: {}, series: { groups: { manual: { id: 'manual', name: '春日', members: [], category: '' } } } };
+    c.view.seriesGroups = data.series.groups;
+    c.view.items = items;
+    c.view.seriesMembership = { 'theme:a': 'manual', 'theme:b': 'manual' };
+    assert.equal(c.applyAutomaticCategories(data), 1);
+    assert.equal(data.series.groups.manual.category, '系列 · 春日');
+    assert.deepEqual(data.categories, ['系列 · 春日']);
+    assert.equal(c.applyAutomaticCategories(data), 0);
+    data.series.groups.manual.category = ''; data.autoCategoryMode = 'author';
+    assert.equal(c.applyAutomaticCategories(data), 0);
+    items.forEach(i => { c.view.metaByKey[i.key] = { author: '作者甲' }; });
+    assert.equal(c.applyAutomaticCategories(data), 1);
+    assert.equal(data.series.groups.manual.category, '作者 · 作者甲');
+});
+
+test('real day/night and series module APIs persist categories to their authoritative records', () => {
+    const c = setup();
+    for (const number of ['09', '10']) {
+        const start = source.indexOf('/* BEGIN MODULE ' + number + '/29:');
+        vm.runInContext(source.slice(start, source.indexOf('/* END MODULE ' + number + '/29:', start)), c);
+    }
+    c.pairsApi = c.window.ThemeMgrModules.themePairs;
+    c.seriesApi = c.window.ThemeMgrModules.themeSeries;
+    vm.runInContext(extract('getItemMetaForWrite'), c);
+    const data = { autoCategoryMode: 'smart', categories: [], themeMeta: {}, dayNight: { pairs: {
+        one: { id: 'one', name: '主题甲', dayTheme: '甲日', nightTheme: '甲夜', meta: { author: '作者甲' } },
+        two: { id: 'two', name: '主题乙', dayTheme: '乙日', nightTheme: '乙夜', meta: { author: '作者甲' } }
+    } } };
+    const rebuild = () => {
+        c.view.items = c.pairsApi.buildLogicalItems(data, ['甲日', '甲夜', '乙日', '乙夜']);
+        c.view.items.forEach(i => { c.view.itemByKey[i.key] = i; c.view.metaByKey[i.key] = i.meta; });
+        c.view.seriesGroups = Object.fromEntries(c.seriesApi.listSeries(data).map(group => [group.id, group]));
+        c.view.seriesMembership = c.seriesApi.getMembershipMap(data);
+    };
+    rebuild();
+    assert.equal(c.applyAutomaticCategories(data), 2);
+    assert.equal(data.dayNight.pairs.one.meta.category, '作者 · 作者甲');
+    assert.equal(data.dayNight.pairs.two.meta.category, '作者 · 作者甲');
+    rebuild();
+    assert.equal(c.applyAutomaticCategories(data), 0);
+    assert.equal(c.seriesApi.createSeries(data, { id: 'manual', name: '手工系列', members: [{ kind: 'day-night', pairId: 'one' }, { kind: 'day-night', pairId: 'two' }] }).ok, true);
+    rebuild();
+    assert.equal(c.applyAutomaticCategories(data), 1);
+    assert.equal(data.series.groups.manual.category, '系列 · 手工系列');
+    assert.ok(data.categories.includes('系列 · 手工系列'));
 });
 
 test('natural name order, reverse order and import order including day/night pairs and old unknown entries', () => {
@@ -87,7 +159,8 @@ test('large library: all members occur once and follow selected order', () => {
     const keys = layout.displayedItems.map(i => i.key);
     assert.equal(keys.length, 500);
     assert.equal(new Set(keys).size, 500);
-    layout.units.forEach(unit => assert.ok(unit.items.every((i, n, list) => !n || Number(i.name.slice(2)) < Number(list[n - 1].name.slice(2)))));
+    assert.deepEqual(plain(keys), items.slice().reverse().map(i => i.key));
+    assert.equal(c.api.planCategories(items, c.view.metaByKey, 'smart', {}, {}).length, 500);
 });
 
 test('locate only after the active generation completes; never repeat or override user scroll', () => {
