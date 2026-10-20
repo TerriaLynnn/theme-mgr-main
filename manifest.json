@@ -1,7 +1,7 @@
 {
-  "display_name": "美化管理 v4.7.2",
-  "version": "4.7.2",
+  "display_name": "美化管理 v4.8.0",
+  "version": "4.8.0",
   "author": "wenshui",
   "js": "index.js",
-  "description": "v4.7.2: 新增美化展示，自动截取 User 和角色消息并设为封面；支持背景批量导入与删除"
+  "description": "v4.8.0: 同系列 / 同作者自动分组、打开定位当前美化、名称与导入时间排序；保留美化展示及背景批量管理"
 }

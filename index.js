@@ -1,5 +1,50 @@
-// GENERATED FILE - Theme Manager v4.7.2 single-file release
+// GENERATED FILE - Theme Manager v4.8.0 single-file release
 // Generated release with local batch-background patch. Includes batch background management and automatic theme showcase covers.
+
+/* BEGIN LIBRARY ORGANIZATION */
+(function (global) {
+    var ns = global.ThemeMgrModules = global.ThemeMgrModules || {};
+    function clean(value) { return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' '); }
+    function identity(value) { return clean(value).toLocaleLowerCase(); }
+    function seriesName(item, meta) {
+        if (clean(meta.seriesName)) return clean(meta.seriesName);
+        var name = clean(item.name);
+        // Only explicit separators or version/variant suffixes count as series evidence.
+        var base = name.replace(/(?:[\s_·—–-]*(?:[（(【\[]\s*)?(?:v\d+(?:\.\d+)*|第?[一二三四五六七八九十\d]+版|日间版?|夜间版?|白天版?|夜晚版?|深色版?|浅色版?|亮色版?|暗色版?)(?:\s*[）)】\]])?)+$/i, '').trim();
+        if (base !== name && base.length >= 2) return base;
+        var match = name.match(/^(.{2,}?)\s*[·|｜:：/—–-]\s*.+$/);
+        return match ? match[1].trim() : '';
+    }
+    function groupItems(items, metaByKey, mode) {
+        if (mode === 'none') return [];
+        var claimed = new Set(), groups = [];
+        function collect(kind, valueFor) {
+            var buckets = new Map();
+            items.forEach(function (item) {
+                if (claimed.has(item.key)) return;
+                var meta = metaByKey[item.key] || {}, label = valueFor(item, meta);
+                if (!label) return;
+                var category = typeof meta.category === 'string' ? meta.category : '';
+                var key = JSON.stringify([category, identity(label)]);
+                if (!buckets.has(key)) buckets.set(key, { name: label, category: category, items: [] });
+                buckets.get(key).items.push(item);
+            });
+            buckets.forEach(function (bucket, key) {
+                if (bucket.items.length < 2) return;
+                var id = 'auto-' + kind + '-' + encodeURIComponent(key);
+                var group = { id: id, name: bucket.name + (kind === 'author' ? ' · 作者' : ' · 系列'), category: bucket.category, automatic: true,
+                    members: bucket.items.map(function (item) { return item.key; }) };
+                bucket.items.forEach(function (item) { claimed.add(item.key); });
+                groups.push({ group: group, items: bucket.items });
+            });
+        }
+        if (mode !== 'author') collect('series', seriesName);
+        if (mode !== 'series') collect('author', function (_, meta) { return clean(meta.author); });
+        return groups;
+    }
+    ns.libraryOrganization = { groupItems: groupItems, seriesName: seriesName };
+})(window);
+/* END LIBRARY ORGANIZATION */
 
 /* BEGIN MODULE 01/29: src/theme-schema.js | sha256:2c8a9fc3dde3d077d226142205dac196d7f3de1455ff99ecf7adb9da6ebafa94 */
 (function (global) {
@@ -16831,7 +16876,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
     var IMG_QUALITY = 0.8;
     var FAB_ID = 'tm-fab-main';
 
-    var TM_VERSION = options.version || '4.7.2';
+    var TM_VERSION = options.version || '4.8.0';
     var storageApi = null;
     var imageToolsApi = null;
     var imageLoaderApi = null;
@@ -17361,7 +17406,8 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
         if (metadataApi && typeof metadataApi.ensureThemeMetaDictionary === 'function') metadataApi.ensureThemeMetaDictionary(d);
         else if (typeof d.themeMeta !== 'object' || !d.themeMeta) d.themeMeta = Object.create(null);
         if (!Array.isArray(d.categories)) d.categories = [];
-        if (typeof d.sortMode !== 'string') d.sortMode = 'name';
+        if (['name', 'name-desc', 'recent', 'freq', 'starred', 'day-night', 'import-asc', 'import-desc'].indexOf(d.sortMode) === -1) d.sortMode = 'name';
+        if (['smart', 'author', 'series', 'none'].indexOf(d.autoGroupMode) === -1) d.autoGroupMode = 'smart';
         if (!d.themeImportOrder || typeof d.themeImportOrder !== 'object' || Array.isArray(d.themeImportOrder)) d.themeImportOrder = Object.create(null);
         if (!Number.isSafeInteger(d.nextThemeImportOrder) || d.nextThemeImportOrder < 1) d.nextThemeImportOrder = 1;
         Object.keys(d.themeImportOrder).forEach(function (name) {
@@ -17445,6 +17491,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
             bgPickerSize: 132,
             gridCardSize: 108,
             sortMode: 'name',
+            autoGroupMode: 'smart',
             themeImportOrder: Object.create(null),
             nextThemeImportOrder: 1,
             previewImageQuality: 'performance',
@@ -19399,6 +19446,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
     var sortOpen = false;
     var categoryPanelOpen = false;
     var categoryCreateOpen = false;
+    var locateCurrentOnRender = false;
     var expandedSeriesId = '';
     var seriesScrollPositions = Object.create(null);
     var seriesResizeBound = false;
@@ -19425,7 +19473,8 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
         if (list === view.items && view.sortedByMode[mode]) return view.sortedByMode[mode];
         var sorted = list.slice();
         switch (mode) {
-            case 'name': sorted.sort(function (a, b) { return a.name.localeCompare(b.name, 'zh'); }); break;
+            case 'name': sorted.sort(function (a, b) { return a.name.localeCompare(b.name, 'zh', { numeric: true }); }); break;
+            case 'name-desc': sorted.sort(function (a, b) { return b.name.localeCompare(a.name, 'zh', { numeric: true }); }); break;
             case 'day-night': sorted.sort(function (a, b) {
                 var pairOrder = Number(b.kind === 'pair') - Number(a.kind === 'pair');
                 return pairOrder || a.name.localeCompare(b.name, 'zh');
@@ -20816,6 +20865,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
         searchComposing = false;
         batchMode = false; batchSelected.clear(); batchDeleting = false; searchQuery = ''; searchOpen = false; sortOpen = false;
         categoryPanelOpen = false; categoryCreateOpen = false;
+        curCat = '__all__'; locateCurrentOnRender = true;
         expandedSeriesId = ''; seriesScrollPositions = Object.create(null); lastSeriesColumnCount = 0;
 
         var ov = document.createElement('div');
@@ -20826,13 +20876,19 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
             '<div class="tm-search-bar" id="tm-search-bar"><div class="tm-search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input class="tm-search-inp" id="tm-search-inp" placeholder="搜索主题名称、标签、作者…" autocomplete="off" /></div><button class="tm-search-clear" id="tm-search-clear"><i class="fa-solid fa-xmark"></i></button></div>' +
             '<div class="tm-sortbar" id="tm-sortbar">' +
             '<span style="font-size:.72em;opacity:.4;flex-shrink:0">排序：</span>' +
-            '<button class="tm-sort-chip on" data-sort="name">名称</button>' +
+            '<button class="tm-sort-chip on" data-sort="name">名称正序</button>' +
+            '<button class="tm-sort-chip" data-sort="name-desc">名称倒序</button>' +
             '<button class="tm-sort-chip" data-sort="recent">最近使用</button>' +
             '<button class="tm-sort-chip" data-sort="freq">使用频率</button>' +
             '<button class="tm-sort-chip" data-sort="starred">收藏优先</button>' +
             '<button class="tm-sort-chip" data-sort="day-night"><i class="fa-solid fa-circle-half-stroke"></i> 日夜美化优先</button>' +
             '<button class="tm-sort-chip" data-sort="import-asc">导入时间正序</button>' +
             '<button class="tm-sort-chip" data-sort="import-desc">导入时间倒序</button>' +
+            '<span class="tm-sort-divider"></span><span style="font-size:.72em;white-space:nowrap">自动分组：</span>' +
+            '<button class="tm-sort-chip" data-group="smart">系列 / 作者</button>' +
+            '<button class="tm-sort-chip" data-group="series">同系列</button>' +
+            '<button class="tm-sort-chip" data-group="author">同作者</button>' +
+            '<button class="tm-sort-chip" data-group="none">关闭</button>' +
             '</div>' +
             '<div class="tm-category-nav" id="tm-category-nav" style="display:none">' +
             '<div class="tm-catbar" id="tm-catbar"></div>' +
@@ -21003,10 +21059,10 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
             sortOpen = !sortOpen;
             ov.querySelector('#tm-sortbar').classList.toggle('open', sortOpen);
         });
-        ov.querySelectorAll('.tm-sort-chip').forEach(function (chip) {
+        ov.querySelectorAll('.tm-sort-chip[data-sort]').forEach(function (chip) {
             chip.addEventListener('click', function () {
                 var d = load(); d.sortMode = chip.dataset.sort; save(d);
-                ov.querySelectorAll('.tm-sort-chip').forEach(function (c) { c.classList.remove('on'); });
+                ov.querySelectorAll('.tm-sort-chip[data-sort]').forEach(function (c) { c.classList.remove('on'); });
                 chip.classList.add('on');
                 renderGrid();
             });
@@ -21026,12 +21082,22 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
             openEditSheet(curTheme);
         });
 
+        ov.querySelectorAll('[data-group]').forEach(function (chip) {
+            chip.classList.toggle('on', chip.dataset.group === load().autoGroupMode);
+            chip.addEventListener('click', function () {
+                var data = load(); data.autoGroupMode = chip.dataset.group; save(data);
+                ov.querySelectorAll('[data-group]').forEach(function (button) { button.classList.toggle('on', button === chip); });
+                expandedSeriesId = ''; renderGrid();
+            });
+        });
+
         // 初始排序高亮
         var d = load();
-        ov.querySelectorAll('.tm-sort-chip').forEach(function (c) { c.classList.toggle('on', c.dataset.sort === d.sortMode); });
+        ov.querySelectorAll('.tm-sort-chip[data-sort]').forEach(function (c) { c.classList.toggle('on', c.dataset.sort === d.sortMode); });
 
         // 加载真实主题列表
         fetchThemeList(function () {
+            locateCurrentOnRender = true;
             renderCatbar();
             renderGrid();
             renderBottomStatus();
@@ -21463,7 +21529,14 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
     function buildSeriesLayoutUnits(d, sortedItems, cat, query, view) {
         view = view || buildLibraryView(d);
         var groups = view.seriesGroups;
-        var membership = view.seriesMembership;
+        // Automatic groups only affect presentation; manual relations remain authoritative.
+        var membership = Object.assign(Object.create(null), view.seriesMembership);
+        groups = Object.assign(Object.create(null), groups);
+        var available = sortedItems.filter(function (item) { return !membership[item.key]; });
+        global.ThemeMgrModules.libraryOrganization.groupItems(available, view.metaByKey, d.autoGroupMode).forEach(function (entry) {
+            groups[entry.group.id] = entry.group;
+            entry.items.forEach(function (item) { membership[item.key] = entry.group.id; });
+        });
         var unitBySeries = Object.create(null);
         var rawUnits = [];
 
@@ -21562,7 +21635,10 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
             if (track && !block.classList.contains('is-expanded')) track.scrollLeft = savedLeft;
 
             var manage = block.querySelector('.tm-series-manage');
-            if (manage) manage.addEventListener('click', function () { openSeriesManageSheet(seriesId); });
+            if (manage) manage.addEventListener('click', function () {
+                if (seriesId.indexOf('auto-') === 0) toast('按同系列或同作者自动分组；可在排序栏调整，编辑作者或名称后自动更新。多选成员可保存为手工系列。');
+                else openSeriesManageSheet(seriesId);
+            });
             var toggle = block.querySelector('.tm-series-toggle');
             if (toggle) toggle.addEventListener('click', function () {
                 var opening = !block.classList.contains('is-expanded');
@@ -21767,6 +21843,13 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
         state.area.dataset.tmRenderedCards = String(state.renderedCards);
         gridRenderState = null;
         gridRenderFrame = null;
+        if (state.locateKey && locateCurrentOnRender) {
+            var current = renderedCardsByKey[state.locateKey];
+            if (current && current.isConnected) {
+                locateCurrentOnRender = false;
+                current.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+            }
+        }
         try {
             state.area.dispatchEvent(new CustomEvent('tm:grid-render-complete', {
                 detail: { generation: state.generation, totalCards: state.renderedCards },
@@ -21863,7 +21946,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
         var d = load();
         var mode = d.sortMode || 'name';
         var requiresLayout = effects.forceFull || effects.layout || effects.category || effects.name ||
-            (effects.searchable && !!searchQuery) ||
+            (effects.searchable && (!!searchQuery || d.autoGroupMode !== 'none')) ||
             (effects.starred && mode === 'starred') ||
             (effects.recent && mode === 'recent') ||
             (effects.freq && mode === 'freq');
@@ -21873,7 +21956,10 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
 
     function bindGridDelegatedEvents(area) {
         if (!area || area._tmGridDelegatedBound) return;
+        area.addEventListener('wheel', function () { locateCurrentOnRender = false; }, { passive: true });
+        area.addEventListener('touchstart', function () { locateCurrentOnRender = false; }, { passive: true });
         area.addEventListener('click', function (event) {
+            locateCurrentOnRender = false;
             var menu = event.target.closest('.tm-card-menu');
             if (menu && area.contains(menu)) {
                 event.preventDefault();
@@ -21938,6 +22024,12 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
 
         var sortedItems = sortItems(view.items, d.sortMode || 'name', d, view);
         var layout = buildSeriesLayoutUnits(d, sortedItems, curCat, searchQuery, view);
+        var locateItem = locateCurrentOnRender ? view.itemByThemeName[curTheme] : null;
+        if (locateItem) layout.units.some(function (unit) {
+            if (unit.type !== 'series' || !unit.items.some(function (item) { return item.key === locateItem.key; })) return false;
+            expandedSeriesId = unit.group.id;
+            return true;
+        });
         var metrics = getGridLayoutMetrics(area, d.gridCardSize);
         var units = d.noImageMode === true ? layout.units : alignSeriesUnitsForGrid(layout.units, metrics.columns);
         var list = layout.displayedItems;
@@ -22012,6 +22104,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
                 unitIndex: 0,
                 renderedCards: 0,
                 currentTheme: curTheme,
+                locateKey: locateItem ? locateItem.key : '',
                 firstBatchDone: false,
                 eagerImagesRemaining: GRID_IMAGE_EAGER_COUNT,
             };
@@ -25072,7 +25165,7 @@ if (previousRendererExports === undefined) delete window.html2canvasExports; els
 
 /* Theme Manager single-file startup */
 (function () {
-    var TM_VERSION = "4.7.2";
+    var TM_VERSION = "4.8.0";
 
     async function start() {
         var modules = window.ThemeMgrModules || {};
